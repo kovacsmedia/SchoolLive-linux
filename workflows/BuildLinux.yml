@@ -1,0 +1,117 @@
+name: Build Linux Binary
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Verzió (pl. 1.1.0)"
+        required: false
+        default: "dev"
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgl1 \
+            libglib2.0-0 \
+            libegl1 \
+            libxcb-cursor0 \
+            libxcb-icccm4 \
+            libxcb-image0 \
+            libxcb-keysyms1 \
+            libxcb-randr0 \
+            libxcb-render-util0 \
+            libxcb-shape0 \
+            libxcb-xinerama0 \
+            libxcb-xkb1 \
+            libxkbcommon-x11-0 \
+            libdbus-1-3 \
+            libpulse0 \
+            libasound2
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r Requirements.txt
+          pip install pyinstaller
+
+      - name: Set version
+        id: version
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            VERSION="${{ github.ref_name }}"
+            VERSION="${VERSION#v}"
+          else
+            VERSION="${{ github.event.inputs.version || 'dev' }}"
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building version: $VERSION"
+
+      - name: Build Linux binary
+        run: |
+          pyinstaller \
+            --onefile \
+            --windowed \
+            --name SchoolLivePlayer \
+            --add-data "schoollive-logo.png:." \
+            --add-data "player/fonts:fonts" \
+            --paths "player" \
+            --hidden-import PyQt6.sip \
+            --hidden-import bcrypt \
+            player/main.py
+
+      - name: Rename binary
+        run: |
+          mv dist/SchoolLivePlayer \
+             dist/SchoolLivePlayer-linux-${{ steps.version.outputs.VERSION }}
+          echo "Binary size:"
+          ls -lah dist/SchoolLivePlayer-linux-${{ steps.version.outputs.VERSION }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SchoolLivePlayer-linux-${{ steps.version.outputs.VERSION }}
+          path: dist/SchoolLivePlayer-linux-${{ steps.version.outputs.VERSION }}
+
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "SchoolLive Player Linux ${{ steps.version.outputs.VERSION }}"
+          draft: false
+          prerelease: false
+          files: dist/SchoolLivePlayer-linux-${{ steps.version.outputs.VERSION }}
+          body: |
+            ## SchoolLive Player Linux ${{ steps.version.outputs.VERSION }}
+
+            ### Telepítés
+            1. Töltsd le a binárist
+            2. Tedd futtathatóvá: `chmod +x SchoolLivePlayer-linux-${{ steps.version.outputs.VERSION }}`
+            3. Indítsd el: `./SchoolLivePlayer-linux-${{ steps.version.outputs.VERSION }}`
+
+            ### Követelmények
+            - Ubuntu 20.04 / Debian 11 vagy újabb (64 bit)
+            - Internetkapcsolat a SchoolLive szerverhez
+
+            ### Automatikus indítás
+            Systemd service vagy autostart bejegyzés ajánlott.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
