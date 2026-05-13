@@ -3,6 +3,15 @@
 #   • port paraméter: start(port) / set_port() – tenant-specifikus snapserver port (pl. 1801)
 #   • mute(bool) – volume=0 mute, visszaállítás eredeti hangerőre
 #   • Az alapértelmezett 1704 helyett a tenant portot kell átadni!
+#
+# FONTOS – Opus codec támogatás:
+# A SchoolLive snapserver Opus codec-kel sugároz (`codec = opus` a server
+# config-ban), ezért a snapclient binárisnak **libopus**-szal kell buildelve
+# lennie. A hivatalos binárisok ezt tartalmazzák:
+#   • Debian/Ubuntu: `sudo apt install snapclient`
+#   • Flatpak:       `flatpak install flathub org.snapcast.snapcast`
+# Ha a kliens csak PCM-et tud decodeolni, "Unsupported codec: opus" hibát kapsz,
+# a snapclient indul ugyan, de nincs hang.
 
 import subprocess
 import threading
