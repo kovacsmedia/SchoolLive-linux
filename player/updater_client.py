@@ -21,13 +21,15 @@ from typing  import Optional, Callable
 from config import APP_VERSION, get_data_dir
 
 # ── GitHub konfig ─────────────────────────────────────────────────────────────
-GITHUB_OWNER   = "schoollive-hu"
-GITHUB_REPO    = "SchoolLive-windows"
+GITHUB_OWNER   = "kovacsmedia"
+GITHUB_REPO    = "SchoolLive-linux"
 GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
 
-# Az asset neve a release-ben (platform szerint)
+# Az asset neve a release-ben (platform szerint).
+# A BuildLinux.yml workflow `SchoolLivePlayer-linux` néven generálja a binárist
+# (a {VERSION} suffix nélkül – lásd a `Rename binary` lépést a workflow-ban).
 ASSET_NAME_WIN   = "SchoolLivePlayer.exe"
-ASSET_NAME_LINUX = "schoollive-player"
+ASSET_NAME_LINUX = "SchoolLivePlayer-linux"
 
 CHECK_INTERVAL_S = 24 * 60 * 60   # 24 óra
 LAST_CHECK_FILE  = get_data_dir() / "last_update_check.txt"

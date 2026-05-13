@@ -78,18 +78,25 @@ jobs:
             --hidden-import bcrypt \
             player/main.py
 
-      - name: Rename binary
+      - name: Rename binary (stable name for updater)
+        # FONTOS: a fájl neve verzió-suffix NÉLKÜL maradjon ("SchoolLivePlayer-linux"),
+        # mert a player/updater_client.py ezt a stabil nevet keresi a GitHub Releases
+        # API-n keresztül (ASSET_NAME_LINUX). Ha versionos suffix-szel mennénk,
+        # az updater soha nem találna új release-t.
         run: |
-          mv dist/SchoolLivePlayer \
-             dist/SchoolLivePlayer-linux-${{ steps.version.outputs.VERSION }}
+          mv dist/SchoolLivePlayer dist/SchoolLivePlayer-linux
+          # SHA256 ellenőrzőösszeg (updater_client.py opcionálisan checkolja)
+          ( cd dist && sha256sum SchoolLivePlayer-linux > SchoolLivePlayer-linux.sha256 )
           echo "Binary size:"
-          ls -lah dist/SchoolLivePlayer-linux-${{ steps.version.outputs.VERSION }}
+          ls -lah dist/SchoolLivePlayer-linux dist/SchoolLivePlayer-linux.sha256
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: SchoolLivePlayer-linux-${{ steps.version.outputs.VERSION }}
-          path: dist/SchoolLivePlayer-linux-${{ steps.version.outputs.VERSION }}
+          path: |
+            dist/SchoolLivePlayer-linux
+            dist/SchoolLivePlayer-linux.sha256
 
       - name: Create GitHub Release
         if: github.ref_type == 'tag'
@@ -98,20 +105,27 @@ jobs:
           name: "SchoolLive Player Linux ${{ steps.version.outputs.VERSION }}"
           draft: false
           prerelease: false
-          files: dist/SchoolLivePlayer-linux-${{ steps.version.outputs.VERSION }}
+          files: |
+            dist/SchoolLivePlayer-linux
+            dist/SchoolLivePlayer-linux.sha256
           body: |
             ## SchoolLive Player Linux ${{ steps.version.outputs.VERSION }}
 
             ### Telepítés
-            1. Töltsd le a binárist
-            2. Tedd futtathatóvá: `chmod +x SchoolLivePlayer-linux-${{ steps.version.outputs.VERSION }}`
-            3. Indítsd el: `./SchoolLivePlayer-linux-${{ steps.version.outputs.VERSION }}`
+            1. Töltsd le a `SchoolLivePlayer-linux` binárist
+            2. Tedd futtathatóvá: `chmod +x SchoolLivePlayer-linux`
+            3. Indítsd el: `./SchoolLivePlayer-linux`
 
             ### Követelmények
             - Ubuntu 20.04 / Debian 11 vagy újabb (64 bit)
             - Internetkapcsolat a SchoolLive szerverhez
+            - `snapclient` (libopus-szal): `sudo apt install snapclient`
 
             ### Automatikus indítás
             Systemd service vagy autostart bejegyzés ajánlott.
+
+            ### Automatikus frissítés
+            A futó kliens 24 óránként ellenőrzi a legújabb release-t és
+            magától frissül a SHA256 ellenőrzés után.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
