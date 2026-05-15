@@ -75,6 +75,13 @@ class SyncClient:
         self.clock            = ClockSync()
         self._reconnect_delay = 3
 
+    # A local clock drift HUD-szinkronra elég: 5 percenként ismételjük meg a
+    # /time poll-alapú szinkront. A snap-stream saját TIME-szinkronja a
+    # snapclient binárison megy (sub-ms), itt csak a WS-üzenet timeline-t
+    # frissítjük (playAtMs → delay_ms). Hosszú futás során NTP-pontos
+    # gép is 50-200ms-t csúszhat – ez a resync megfogja.
+    CLOCK_RESYNC_INTERVAL_S = 300
+
     def start(self) -> None:
         if not WS_AVAILABLE:
             print("[SyncClient] websockets csomag nem elérhető")
@@ -82,6 +89,22 @@ class SyncClient:
         self._running = True
         self._thread  = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+        threading.Thread(target=self._clock_resync_loop, daemon=True).start()
+
+    def _clock_resync_loop(self) -> None:
+        """Periodikus /time-alapú clock-resync, amíg a kliens fut. Csak akkor
+        szinkronizál, ha aktív WS kapcsolatunk van (különben a HELLO úgyis
+        visszaállítja az offsetet újrakapcsolódáskor)."""
+        while self._running:
+            time.sleep(self.CLOCK_RESYNC_INTERVAL_S)
+            if not self._running:
+                return
+            if self._ws is None:
+                continue
+            try:
+                self.clock.sync()
+            except Exception as e:
+                print(f"[ClockSync] periodikus resync hiba: {e}")
 
     def stop(self) -> None:
         self._running = False

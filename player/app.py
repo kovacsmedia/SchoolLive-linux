@@ -14,6 +14,7 @@ from snapcast_manager import SnapcastManager
 from sync_client      import SyncClient
 from updater_client   import AutoUpdater
 from device_agent     import DeviceAgent
+from system_volume    import set_system_volume, set_system_mute
 from ui               import PlayerUI
 
 BEACON_INTERVAL_S = 30
@@ -201,6 +202,14 @@ class SchoolLiveApp:
         if not prepare:
             return
 
+        # PREPARE-en NEM célzott eszközön se snap-en, se lokálisan ne szóljon
+        # a hang, és HUD se jelenjen meg. A `_snap_muted` flag-et a PREPARE
+        # állítja be a `targetDeviceIds` alapján. (Egyezően az Android
+        # `applyTargeting` skip-pel.)
+        if self._snap_muted:
+            print(f"[App] PLAY: nem-célzott eszköz (snap muted), skip")
+            return
+
         server_now = self._ws.clock.server_now_ms()
         if play_at_ms:
             delay_ms = (play_at_ms - server_now)
@@ -274,6 +283,16 @@ class SchoolLiveApp:
             and not self._snap_muted
         )
 
+        # HUD-célzás: a NOW_PLAYING_INFO / immediate BELL / TTS / PLAY_URL
+        # broadcast minden tenant-eszközre megy (a backend source:start
+        # eventjén nincs targeting-lista). Az utolsó PREPARE célzása alapján
+        # `_snap_muted` jelzi, hogy a kliens hallja-e a snap streamet. Ha
+        # nem hallja, akkor HUD-ot sem mutatunk – egyezően az Android
+        # kliens viselkedésével.
+        if self._snap_muted and action in ("BELL", "TTS", "PLAY_URL", "NOW_PLAYING_INFO"):
+            print(f"[App] {action}: snap muted (nem célzott) → HUD skip")
+            return
+
         if action == "BELL":
             url = msg.get("url", "")
             now = datetime.datetime.now()
@@ -313,6 +332,24 @@ class SchoolLiveApp:
                 self._snap_muted = False
                 self._snap.mute(False)
                 self._snap.restart()
+
+        elif action == "NOW_PLAYING_INFO":
+            # Backend forrás-start event: az aktuálisan szóló forrás
+            # nevének/típusának HUD-frissítése. A snap stream folyamatosan szól,
+            # csak az UI-t frissítjük – nincs snap-restart, nincs mute.
+            # (Targeting-gate fent: ha `_snap_muted` aktív, már visszatértünk.)
+            title = msg.get("title") or ""
+            job_type = msg.get("jobType") or ""
+            source_type = msg.get("sourceType") or ""
+            print(f"[App] NOW_PLAYING_INFO: {job_type} '{title}' (source={source_type})")
+            try:
+                if hasattr(self.ui, "show_now_playing"):
+                    self.ui.show_now_playing(title, job_type)
+                elif title and hasattr(self.ui, "show_radio_overlay"):
+                    # Fallback a meglévő overlay-re a stream-szerű kijelzéshez
+                    self.ui.show_radio_overlay(title, 0)
+            except Exception as e:
+                print(f"[App] NOW_PLAYING_INFO UI hiba: {e}")
 
         elif action == "SYNC_BELLS":
             threading.Thread(target=self._sync_bells, daemon=True).start()
@@ -379,12 +416,15 @@ class SchoolLiveApp:
         self._handle_volume(vol)
 
     def _on_remote_mute(self, muted: bool) -> None:
-        """Backend MUTE parancs → snap mute toggle."""
+        """Backend MUTE parancs → snap mute toggle + OS master mute."""
         self._snap_muted = muted
         try:
             self._snap.mute(muted)
         except Exception as e:
             print(f"[App] remote mute hiba: {e}")
+        # OS master mute is – ha a system mixer-ben le van halkítva, hiába
+        # tartja a snap a saját puffer-gain-jét magasan, a hang nem hallatszik.
+        set_system_mute(muted)
 
     def _on_remote_reboot(self) -> None:
         """Backend REBOOT parancs → kilépés (systemd / launcher visszahozza)."""
@@ -437,7 +477,11 @@ class SchoolLiveApp:
     # ── Hangerő ───────────────────────────────────────────────────────────────
     def _handle_volume(self, vol: int) -> None:
         self._volume = vol
+        # 1) snapclient saját puffer-gain (app-szint, csak a snap stream-re hat)
         self._snap.set_volume(int(vol * 10))
+        # 2) OS master mixer is mozogjon, hogy a "10/10" tényleg max hangerő
+        #    legyen a fizikai kimeneten (pactl/amixer/nircmd, ha elérhető)
+        set_system_volume(int(vol * 10))
         self._settings["volume"] = vol
         save_settings(self._settings)
 

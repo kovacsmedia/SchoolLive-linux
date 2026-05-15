@@ -6,7 +6,7 @@ import platform
 from pathlib import Path
 
 APP_NAME    = "SchoolLive Player"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.5.0"
 API_BASE    = os.environ.get("SL_API_BASE", "https://api.schoollive.hu")
 WS_URL      = API_BASE.replace("https://", "wss://").replace("http://", "ws://") + "/sync"
 

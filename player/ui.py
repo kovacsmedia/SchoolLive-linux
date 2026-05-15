@@ -6,6 +6,8 @@ import math
 import datetime
 from typing import Optional, Callable
 
+from config import APP_VERSION
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton,
     QLineEdit, QFrame, QVBoxLayout, QHBoxLayout, QStackedWidget,
@@ -316,7 +318,9 @@ class PlayerUI(QMainWindow):
 
         left = QVBoxLayout()
         left.setSpacing(2)
-        brand = QLabel("SchoolLive")
+        # Bal felső márka + verzió – egységes az Android klienssel
+        # ("SchoolLive! client V{VERSION_NAME}"), alatta a tenant neve.
+        brand = QLabel(f"SchoolLive! client V{APP_VERSION}")
         brand.setStyleSheet(f"color: {BLUE}; font-size: 15px; font-weight: 800;")
         self._lbl_inst = QLabel("")
         self._lbl_inst.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 12px;")
