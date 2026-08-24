@@ -13,7 +13,6 @@ from config           import load_settings, save_settings
 from snapcast_manager import SnapcastManager
 from sync_client      import SyncClient
 from updater_client   import AutoUpdater
-from device_agent     import DeviceAgent
 from system_volume    import set_system_volume, set_system_mute
 from ui               import PlayerUI
 
@@ -44,6 +43,7 @@ class SchoolLiveApp:
             on_immediate    = self._on_immediate,
             on_connected    = self._on_ws_connected,
             on_disconnected = self._on_ws_disconnected,
+            on_device_id    = self._on_ws_device_id,
             device_key      = DEVICE_KEY,
         )
 
@@ -54,15 +54,9 @@ class SchoolLiveApp:
         ui.set_volume_display(self._volume)
         self._handle_volume(self._volume)
 
-        # ── ESP-uniform DeviceAgent: /devices/poll → SET_VOLUME, MUTE, REBOOT,
-        # SHOW_MESSAGE, audio command ACK (a hangot a snapclient bináris kapja).
-        self._agent = DeviceAgent(
-            device_key       = DEVICE_KEY,
-            on_set_volume    = self._on_remote_set_volume,
-            on_mute          = self._on_remote_mute,
-            on_reboot        = self._on_remote_reboot,
-            on_show_message  = self._on_remote_show_message,
-        )
+        # SET_VOLUME/MUTE/REBOOT/SHOW_MESSAGE mostantól a WS `_on_immediate`-en
+        # érkeznek real-time (nem a korábbi 2s-es HTTP /devices/poll-on
+        # keresztül) – ld. device_agent.py (törölve) helyett fent.
 
         self._updater = AutoUpdater(
             on_update_available = self._on_update_available,
@@ -137,7 +131,6 @@ class SchoolLiveApp:
         threading.Thread(target=self._sync_bells,     daemon=True).start()
         threading.Thread(target=self._bell_tick_loop, daemon=True).start()
         threading.Thread(target=self._beacon_loop,    daemon=True).start()
-        self._agent.start()
 
         self._updater.start()
 
@@ -160,6 +153,15 @@ class SchoolLiveApp:
     def _on_ws_disconnected(self) -> None:
         self._online = False
         self.ui.set_online(False)
+
+    def _on_ws_device_id(self, device_id: str) -> None:
+        """HELLO deviceId – korábban csak a HTTP beacon válaszából ismertük
+        meg. Csak egyszer mentjük el (idempotens, akárhányszor csatlakozunk
+        újra)."""
+        if not self._device_id:
+            self._device_id = device_id
+            api.save_device_id(device_id)
+            print(f"[App] Device ID (HELLO): {device_id}")
 
     # ── PREPARE ───────────────────────────────────────────────────────────────
     def _on_prepare(self, msg: dict) -> None:
@@ -354,6 +356,52 @@ class SchoolLiveApp:
         elif action == "SYNC_BELLS":
             threading.Thread(target=self._sync_bells, daemon=True).start()
 
+        # ── Vezérlő parancsok (korábban csak a HTTP /devices/poll DeviceAgent
+        # kapta meg ezeket – ld. device_agent.py _execute). A commandId jelenléte
+        # esetén CMD_ACK-ot küldünk, hogy a backend ACKED-re állítsa a parancsot
+        # (ne duplikálódjon, ha a kliens időközben újracsatlakozik).
+        elif action == "SET_VOLUME":
+            command_id = msg.get("commandId", "")
+            vol = msg.get("volume")
+            if not isinstance(vol, (int, float)):
+                if command_id:
+                    self._ws.send_cmd_ack(command_id, False, "No volume")
+                return
+            vol_i = max(0, min(10, int(vol)))
+            print(f"[App] SET_VOLUME (WS) → {vol_i}")
+            self._on_remote_set_volume(vol_i)
+            if command_id:
+                self._ws.send_cmd_ack(command_id, True)
+
+        elif action == "MUTE":
+            command_id = msg.get("commandId", "")
+            muted = bool(msg.get("mute", True))
+            print(f"[App] MUTE (WS) → {muted}")
+            self._on_remote_mute(muted)
+            if command_id:
+                self._ws.send_cmd_ack(command_id, True)
+
+        elif action == "REBOOT":
+            command_id = msg.get("commandId", "")
+            print("[App] REBOOT (WS)")
+            # ACK ELŐSZÖR, hogy a backend lássa a sikert, mielőtt a kliens
+            # kilép (ld. _on_remote_reboot).
+            if command_id:
+                self._ws.send_cmd_ack(command_id, True)
+            self._on_remote_reboot()
+
+        elif action == "SHOW_MESSAGE":
+            command_id = msg.get("commandId", "")
+            text = str(msg.get("message") or "")
+            if not text:
+                if command_id:
+                    self._ws.send_cmd_ack(command_id, False, "No message")
+                return
+            print(f"[App] SHOW_MESSAGE (WS): {text}")
+            self._on_remote_show_message(text)
+            if command_id:
+                self._ws.send_cmd_ack(command_id, True)
+
     # ── Csengetési rend ───────────────────────────────────────────────────────
     def _sync_bells(self) -> None:
         bells = api.fetch_bells(DEVICE_KEY)
@@ -366,41 +414,28 @@ class SchoolLiveApp:
             self.ui.set_cache_status("⚠ Csengetési rend üres")
 
     # ── Beacon loop ───────────────────────────────────────────────────────────
+    #
+    # WS-alapú beacon (korábban 30s-enkénti HTTP POST /devices/native/beacon
+    # volt) – ugyanaz a payload, csak a SyncEngine WS "BEACON" handlere
+    # dolgozza fel. A deviceId-t már nem a beacon válaszából tanuljuk meg,
+    # hanem a HELLO üzenetből (ld. _on_ws_device_id).
     def _beacon_loop(self) -> None:
         while True:
             try:
-                import urllib.request, json
-                from config import API_BASE
-                # ESP-uniform telemetria: volume (0-10) és muted az admin UI
-                # számára. A statusPayload-ban további állapot megjelölhető.
                 status_payload = {
                     "snapConnected": bool(self._snap.connected),
                     "wsOnline":      bool(self._online),
+                    "hardwareId":    HARDWARE_ID,
+                    "shortId":       SHORT_ID,
+                    "platform":      "linux",
+                    "appVersion":    "1.1.0",
                 }
-                body = json.dumps({
-                    "hardwareId": HARDWARE_ID,
-                    "shortId":    SHORT_ID,
-                    "platform":   "linux",
-                    "appVersion": "1.1.0",
-                    "volume":     int(self._volume),
-                    "muted":      bool(self._snap_muted),
-                    "statusPayload": status_payload,
-                }).encode()
-                req = urllib.request.Request(
-                    f"{API_BASE}/devices/native/beacon",
-                    data=body,
-                    headers={"Content-Type": "application/json",
-                             "x-device-key": DEVICE_KEY},
-                    method="POST",
+                self._ws.send_beacon(
+                    volume=int(self._volume),
+                    muted=bool(self._snap_muted),
+                    firmware_version="1.1.0",
+                    status_payload=status_payload,
                 )
-                resp_data = json.loads(
-                    urllib.request.urlopen(req, timeout=5).read()
-                )
-                did = resp_data.get("deviceId")
-                if did and not self._device_id:
-                    self._device_id = did
-                    api.save_device_id(did)
-                    print(f"[App] Device ID (beacon): {did}")
             except Exception:
                 pass
             time.sleep(BEACON_INTERVAL_S)
@@ -429,11 +464,7 @@ class SchoolLiveApp:
     def _on_remote_reboot(self) -> None:
         """Backend REBOOT parancs → kilépés (systemd / launcher visszahozza)."""
         print("[App] REBOOT parancs érkezett, kilépés...")
-        try:
-            self._agent.stop()
-        except Exception:
-            pass
-        time.sleep(1)  # várjuk meg az ACK kimenetét
+        time.sleep(1)  # várjuk meg, hogy a CMD_ACK WS-frame kimenjen
         sys.exit(0)
 
     def _on_remote_show_message(self, msg: str) -> None:

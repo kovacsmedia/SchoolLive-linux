@@ -61,12 +61,14 @@ class SyncClient:
                  on_immediate: Callable[[dict], None],
                  on_connected: Optional[Callable] = None,
                  on_disconnected: Optional[Callable] = None,
+                 on_device_id: Optional[Callable[[str], None]] = None,
                  device_key: Optional[str] = None):
         self._on_prepare      = on_prepare
         self._on_play         = on_play
         self._on_immediate    = on_immediate
         self._on_connected    = on_connected
         self._on_disconnected = on_disconnected
+        self._on_device_id    = on_device_id
         self._device_key      = device_key   # JWT helyett device key (mint ESP32)
         self._ws              = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -123,6 +125,35 @@ class SyncClient:
             asyncio.run_coroutine_threadsafe(
                 self._ws.send(msg), self._loop
             )
+
+    def send_cmd_ack(self, command_id: str, ok: bool, error: str = "") -> bool:
+        """CMD_ACK a WS-en real-time érkezett vezérlő parancsokra (SET_VOLUME/
+        MUTE/REBOOT/SHOW_MESSAGE – ld. app.py _on_immediate). Ez zárja ki a
+        parancs duplikált végrehajtását, mert a backend a SyncEngine.handleCmdAck
+        hívásra ACKED-re állítja a DeviceCommand-ot."""
+        if not command_id or not self._ws or not self._loop:
+            return False
+        body: dict = {"type": "CMD_ACK", "commandId": command_id, "ok": ok}
+        if not ok and error:
+            body["error"] = error
+        asyncio.run_coroutine_threadsafe(self._ws.send(json.dumps(body)), self._loop)
+        return True
+
+    def send_beacon(self, volume: int, muted: bool, firmware_version: str, status_payload: dict) -> bool:
+        """BEACON a WS-en – felváltja a korábbi 30s-es HTTP POST
+        /devices/native/beacon hívást. A backend SyncEngine.handleBeacon
+        dolgozza fel."""
+        if not self._ws or not self._loop:
+            return False
+        body = json.dumps({
+            "type":            "BEACON",
+            "volume":          volume,
+            "muted":           muted,
+            "firmwareVersion": firmware_version,
+            "statusPayload":   status_payload,
+        })
+        asyncio.run_coroutine_threadsafe(self._ws.send(body), self._loop)
+        return True
 
     def _run(self) -> None:
         self._loop = asyncio.new_event_loop()
@@ -189,6 +220,15 @@ class SyncClient:
                 self.clock._offset_ms = server_now - local_now
             except Exception:
                 pass
+            # A HELLO deviceId mezője a tényleges Device.id (a backend a
+            # deviceKey-ből oldja fel) – korábban csak a HTTP beacon
+            # válaszából ismertük meg.
+            device_id = msg.get("deviceId")
+            if device_id and self._on_device_id:
+                try:
+                    self._on_device_id(str(device_id))
+                except Exception:
+                    pass
             return
 
         phase = msg.get("phase")
