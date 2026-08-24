@@ -8,6 +8,7 @@ from typing import Optional
 
 import api_client    as api
 import audio_manager as audio
+import bell_calendar
 from api_client       import DEVICE_KEY, SHORT_ID, HARDWARE_ID
 from config           import load_settings, save_settings
 from snapcast_manager import SnapcastManager
@@ -25,6 +26,8 @@ class SchoolLiveApp:
         self.ui        = ui
         self._settings = load_settings()
         self._bells:   list = []
+        # A self._bells melyik napra érvényes – ld. Windows app.py.
+        self._bells_date: Optional[datetime.date] = None
         self._status   = "provisioning"
         self._online   = False
         self._last_bell_key = ""
@@ -404,14 +407,39 @@ class SchoolLiveApp:
 
     # ── Csengetési rend ───────────────────────────────────────────────────────
     def _sync_bells(self) -> None:
-        bells = api.fetch_bells(DEVICE_KEY)
+        data = api.fetch_bells(DEVICE_KEY)
+        if not data:
+            self.ui.set_cache_status("⚠ Csengetési rend lekérés sikertelen")
+            return
+
+        bells = [] if data.get("isHoliday") else (data.get("bells") or [])
+        self._bells      = bells
+        self._bells_date = datetime.date.today()
         if bells:
-            self._bells = bells
             audio.prefetch_bells(bells)
             self.ui.set_bells(bells)
             self.ui.set_cache_status(f"🔔 {len(bells)} csengő betöltve")
         else:
-            self.ui.set_cache_status("⚠ Csengetési rend üres")
+            self.ui.set_cache_status("⚠ Csengetési rend üres (ünnepnap)" if data.get("isHoliday") else "⚠ Csengetési rend üres")
+
+        # Teljes tanévnyi naptár mentése lokálisan – ld. Windows app.py.
+        bell_calendar.save_full_year_calendar(data)
+
+    def _bells_for_today(self) -> list:
+        """A ma érvényes csengetési lista – napváltás esetén a lokálisan
+        mentett teljes tanévnyi naptárból oldja fel. Ld. Windows app.py."""
+        today = datetime.date.today()
+        if self._bells_date == today:
+            return self._bells
+
+        bells, is_holiday = bell_calendar.resolve_bells_for_date(today)
+        self._bells      = bells
+        self._bells_date = today
+        if is_holiday:
+            print(f"[App] Naptár szerint ma ünnepnap/hétvége ({today.isoformat()}) – nincs csengetés")
+        else:
+            print(f"[App] Napváltás – naptárból feloldva: {len(bells)} csengő ({today.isoformat()})")
+        return bells
 
     # ── Beacon loop ───────────────────────────────────────────────────────────
     #
@@ -482,7 +510,10 @@ class SchoolLiveApp:
     def _bell_tick_loop(self) -> None:
         while True:
             time.sleep(5)
-            if self._status != "active" or not self._bells:
+            if self._status != "active":
+                continue
+            bells = self._bells_for_today()
+            if not bells:
                 continue
             now = datetime.datetime.now()
             if now.second > 58:
@@ -491,7 +522,7 @@ class SchoolLiveApp:
             if self._last_bell_key == key:
                 continue
             due = next(
-                (b for b in self._bells
+                (b for b in bells
                  if b["hour"] == now.hour and b["minute"] == now.minute),
                 None,
             )

@@ -202,21 +202,26 @@ def fetch_snap_port(device_key: str) -> Optional[int]:
         return None
 
 # ── Bell lekérés ──────────────────────────────────────────────────────────────
-def fetch_bells(device_key: str) -> list:
-    """Csengetési rend lekérése – device key auth headerrel."""
+def fetch_bells(device_key: str) -> dict:
+    """Csengetési rend lekérése – device key auth headerrel.
+
+    /bells/sync-ot hívja /bells/today helyett: ugyanazt a "ma" listát adja
+    (bells/isHoliday), de emellett a teljes tanévnyi naptárat is (templates/
+    calendar/defaultTemplateId/fullYearVersion) – ez teszi lehetővé, hogy a
+    kliens napváltáskor is (teljesen offline) helyesen fel tudja oldani a
+    csengetési rendet, ld. bell_calendar.py."""
     try:
         req = urllib.request.Request(
-            f"{API_BASE}/bells/today",
+            f"{API_BASE}/bells/sync",
             headers={"Content-Type": "application/json",
                      "x-device-key": device_key},
             method="GET",
         )
         with urllib.request.urlopen(req, timeout=8) as resp:
-            data = json.loads(resp.read().decode())
-            return data.get("bells", [])
+            return json.loads(resp.read().decode())
     except Exception as e:
         print(f"[API] fetchBells hiba: {e}")
-        return []
+        return {}
 
 # ── Tenant info ───────────────────────────────────────────────────────────────
 def fetch_tenant_name(device_key: str) -> Optional[str]:
