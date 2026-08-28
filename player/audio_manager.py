@@ -6,7 +6,7 @@ import tempfile
 import urllib.request
 from pathlib import Path
 from typing  import Optional
-from config  import API_BASE, get_data_dir
+from config  import get_api_base, get_data_dir
 
 try:
     import pygame
@@ -38,7 +38,7 @@ def prefetch_bell(sound_file: str) -> None:
         if dest.exists():
             return
         try:
-            url = f"{API_BASE}/audio/bells/{sound_file}"
+            url = f"{get_api_base()}/audio/bells/{sound_file}"
             urllib.request.urlretrieve(url, dest)
             print(f"[Audio] Cached: {sound_file}")
         except Exception as e:
@@ -68,7 +68,7 @@ def play_bell(sound_file: str, volume: float = 0.7,
             dest = _cache_path(sound_file)
             if not dest.exists():
                 try:
-                    url = f"{API_BASE}/audio/bells/{sound_file}"
+                    url = f"{get_api_base()}/audio/bells/{sound_file}"
                     urllib.request.urlretrieve(url, dest)
                 except Exception as e:
                     print(f"[Audio] Bell letöltés sikertelen: {sound_file}: {e}")

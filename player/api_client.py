@@ -19,7 +19,7 @@ import urllib.error
 from pathlib import Path
 from typing  import Optional
 
-from config import API_BASE, get_data_dir
+from config import get_api_base, get_data_dir
 
 # ── Hardware ID (MAC cím alapú) ───────────────────────────────────────────────
 def get_hardware_id() -> str:
@@ -89,7 +89,7 @@ def _request(method: str, path: str, body: Optional[dict] = None,
 
     data = json.dumps(body).encode() if body is not None else None
     req  = urllib.request.Request(
-        f"{API_BASE}{path}", data=data, headers=headers, method=method
+        f"{get_api_base()}{path}", data=data, headers=headers, method=method
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -160,7 +160,7 @@ def get_device_id(device_key: str) -> Optional[str]:
     # Backend lekérés: /devices/native/info visszaadja a deviceId-t is
     try:
         req = urllib.request.Request(
-            f"{API_BASE}/devices/native/info",
+            f"{get_api_base()}/devices/native/info",
             headers={"x-device-key": device_key},
             method="GET",
         )
@@ -185,7 +185,7 @@ def fetch_snap_port(device_key: str) -> Optional[int]:
     """
     try:
         req = urllib.request.Request(
-            f"{API_BASE}/devices/native/snap-port",
+            f"{get_api_base()}/devices/native/snap-port",
             headers={"x-device-key": device_key},
             method="GET",
         )
@@ -212,7 +212,7 @@ def fetch_bells(device_key: str) -> dict:
     csengetési rendet, ld. bell_calendar.py."""
     try:
         req = urllib.request.Request(
-            f"{API_BASE}/bells/sync",
+            f"{get_api_base()}/bells/sync",
             headers={"Content-Type": "application/json",
                      "x-device-key": device_key},
             method="GET",
@@ -228,7 +228,7 @@ def fetch_tenant_name(device_key: str) -> Optional[str]:
     """Visszaadja az intézmény nevét device key alapján."""
     try:
         req = urllib.request.Request(
-            f"{API_BASE}/devices/native/info",
+            f"{get_api_base()}/devices/native/info",
             headers={"x-device-key": device_key},
             method="GET",
         )
@@ -238,7 +238,42 @@ def fetch_tenant_name(device_key: str) -> Optional[str]:
             device_id = data.get("deviceId")
             if device_id:
                 save_device_id(device_id)
+            # Multi-node cluster: tenantId cache-elése, hogy node-váltás
+            # (dead node fallback) esetén a locate_node()-t tudjuk hívni.
+            tenant_id = data.get("tenantId")
+            if tenant_id:
+                save_tenant_id(tenant_id)
             return data.get("tenantName")
     except Exception as e:
         print(f"[API] fetch_tenant_name hiba: {e}")
+        return None
+
+# ── Multi-node cluster: tenantId cache + node discovery ───────────────────────
+def get_cached_tenant_id() -> Optional[str]:
+    """Lokálisan cachelt tenant UUID visszaadása."""
+    p = get_data_dir() / "tenant_id.txt"
+    if p.exists():
+        return p.read_text().strip() or None
+    return None
+
+def save_tenant_id(tenant_id: str) -> None:
+    """Tenant UUID mentése lokálisan."""
+    (get_data_dir() / "tenant_id.txt").write_text(tenant_id)
+
+def locate_node(tenant_id: str) -> Optional[str]:
+    """GET /cluster/locate?tenantId= – hitelesítés nélküli, bárhonnan ugyanazt
+    a választ adja. Csak akkor kell hívni, ha a NODE_REASSIGNED WS-push nem
+    érkezett meg (pl. a régi node ténylegesen halott volt, nem tudott
+    üzenni) – ilyenkor N sikertelen reconnect-kísérlet után hívjuk (ld.
+    sync_client.py _connect_loop)."""
+    try:
+        req = urllib.request.Request(
+            f"{get_api_base()}/cluster/locate?tenantId={tenant_id}",
+            method="GET",
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+            return data.get("hostname")
+    except Exception as e:
+        print(f"[API] locate_node hiba: {e}")
         return None

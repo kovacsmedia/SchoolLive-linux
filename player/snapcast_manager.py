@@ -18,7 +18,7 @@ import threading
 import time
 import platform
 from typing import Optional, Callable
-from config import API_BASE, get_snapclient_bin
+from config import get_api_base, get_snapclient_bin
 
 
 def _get_snapserver_host() -> str:
@@ -33,7 +33,7 @@ def _get_snapserver_host() -> str:
     override = os.environ.get("SNAP_SERVER_HOST")
     if override:
         return override
-    host = API_BASE.replace("https://", "").replace("http://", "").split("/")[0]
+    host = get_api_base().replace("https://", "").replace("http://", "").split("/")[0]
     return host
 
 

@@ -6,9 +6,51 @@ import platform
 from pathlib import Path
 
 APP_NAME    = "SchoolLive Player"
-APP_VERSION = "1.5.0"
-API_BASE    = os.environ.get("SL_API_BASE", "https://api.schoollive.hu")
-WS_URL      = API_BASE.replace("https://", "wss://").replace("http://", "ws://") + "/sync"
+APP_VERSION = "1.5.5"
+
+# Multi-node cluster: API_BASE/WS_URL korábban egyszeri, import-kori
+# konstansok voltak – minden `from config import API_BASE` hívó a BETÖLTÉSKORI
+# értéket kötötte be, egy későbbi módosítás nem érvényesült náluk. Mostantól
+# get_api_base()/get_ws_url() FÜGGVÉNYEK, amiket minden hívónak (pl.
+# sync_client.py _connect_loop()) újra kell hívnia – a `while` cikluson belüli
+# hívóknál ez már eleve így működik, tehát egy set_api_base() a KÖVETKEZŐ
+# iterációban magától érvényesül.
+_ENV_DEFAULT_API_BASE = os.environ.get("SL_API_BASE", "https://api.schoollive.hu")
+_api_base_override: str | None = None
+_override_loaded = False
+
+def get_api_base() -> str:
+    global _api_base_override, _override_loaded
+    if not _override_loaded:
+        # Lazy betöltés – load_settings() ebben a fájlban lentebb van
+        # definiálva, de Python ezt csak HÍVÁSKOR oldja fel, nem
+        # importáláskor, tehát ez a sorrend biztonságos.
+        try:
+            saved = load_settings().get("apiBaseOverride")
+            if saved:
+                _api_base_override = saved
+        except Exception:
+            pass
+        _override_loaded = True
+    return _api_base_override or _ENV_DEFAULT_API_BASE
+
+def set_api_base(url: str) -> None:
+    """Multi-node cluster: node-váltáskor hívva (ld. sync_client.py 4009 ág).
+    Perzisztált is, hogy egy újraindítás után is a legutóbb ismert jó node-ot
+    próbálja először."""
+    global _api_base_override, _override_loaded
+    _api_base_override = url
+    _override_loaded = True
+    try:
+        s = load_settings()
+        s["apiBaseOverride"] = url
+        save_settings(s)
+    except Exception:
+        pass
+
+def get_ws_url() -> str:
+    base = get_api_base()
+    return base.replace("https://", "wss://").replace("http://", "ws://") + "/sync"
 
 # Snapclient bináris keresési útvonalak platformonként
 SNAPCLIENT_CANDIDATES_WIN = [
