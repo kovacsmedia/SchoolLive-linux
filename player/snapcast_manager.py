@@ -157,7 +157,40 @@ class SnapcastManager:
                     break
             time.sleep(self._restart_delay)
 
+    def ensure_current_host(self) -> None:
+        """Node-váltás után újraindítja a snapclientet az ÚJ hosttal.
+
+        A `_start_proc` ugyan minden induláskor újraolvassa a hostot, de egy
+        MÁR FUTÓ snapclient magától sosem venné észre a változást: a régi node
+        felé tartaná (vagy próbálná) a kapcsolatot, miközben a tenant streamje
+        már máshol szól. Ezt periodikusan kell ellenőrizni (ld. app.py beacon
+        loop), mert a node-váltásról a WS-oldal értesül (NODE_REASSIGNED /
+        4009 → config.set_api_base), nem a snap-oldal."""
+        new_host = _get_snapserver_host()
+        if new_host == self._server_host:
+            return
+        print(f"[Snapcast] node-váltás: {self._server_host} → {new_host} – snapclient újraindítás")
+        self._server_host = new_host
+        # A _run_loop a folyamat kilépése után magától újraindítja, és a
+        # _start_proc ekkor már az új hostot használja.
+        self._kill_proc()
+
     def _start_proc(self) -> None:
+        # A snapserver hostot MINDEN indításnál újraolvassuk, nem a
+        # konstruktorban rögzítjük.
+        #
+        # Multi-node: ha a tenant átkerül egy másik backend-node-ra, a
+        # SyncClient megkapja a NODE_REASSIGNED üzenetet (vagy a 4009 close
+        # code-ot) és meghívja a config.set_api_base()-t – a WS onnantól az új
+        # node-ra csatlakozik. A snapclient viszont a `self._server_host`
+        # konstruktorban befagyott értékét használta, tehát TOVÁBBRA IS a régi
+        # node snapserverét hívta, ahol a tenant streamje már nem is fut:
+        # a WS él, hang nincs, és csak az alkalmazás újraindítása javítja.
+        new_host = _get_snapserver_host()
+        if new_host != self._server_host:
+            print(f"[Snapcast] snapserver host változott: {self._server_host} → {new_host}")
+            self._server_host = new_host
+
         import shutil
         use_flatpak_spawn = (
             self._bin.startswith("/run/host/")

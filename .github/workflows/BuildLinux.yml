@@ -73,6 +73,7 @@ jobs:
             --name SchoolLivePlayer \
             --add-data "schoollive-logo.png:." \
             --add-data "player/fonts:fonts" \
+            --add-data "player/assets:assets" \
             --paths "player" \
             --hidden-import PyQt6.sip \
             --hidden-import bcrypt \

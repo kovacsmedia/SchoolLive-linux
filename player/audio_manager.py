@@ -1,6 +1,8 @@
 # player/audio_manager.py
 
 import os
+import shutil
+import sys
 import threading
 import tempfile
 import urllib.request
@@ -27,6 +29,45 @@ _lock = threading.Lock()
 def _safe_vol(volume: float) -> float:
     return max(0.0, min(0.5, volume * 0.5))
 
+# ── Csengetőhang-URL nyilvántartás ───────────────────────────────────────────
+#
+# A backend a `/bells/sync` válaszban `sounds: [{filename, url, sizeBytes}]`
+# alakban megadja, HOL van az adott hangfájl. Erre azért van szükség, mert a
+# hangok mostantól tenant-szeparáltan tárolódnak
+# (`/audio/bells/<tenantId>/<fájlnév>`), és a régi, kliens-oldalon
+# összerakott `/audio/bells/<fájlnév>` út csak a migráció előtti fájlokra jó.
+# (A backend feloldója visszaesik a régi helyre, ezért mindkettő működik –
+# de a HELYES URL-t mindig a szerver tudja.)
+#
+# Az ESP32 és az Android eleve ezt a mezőt használja; a Python kliensek eddig
+# maguk fűzték össze az utat.
+_sound_urls: dict = {}
+
+
+def register_sound_urls(sounds) -> None:
+    """A /bells/sync `sounds` tömbjének feldolgozása (filename → url)."""
+    for s in (sounds or []):
+        try:
+            fn = s.get("filename")
+            u  = s.get("url")
+            if fn and u:
+                _sound_urls[fn] = u
+        except Exception:
+            continue
+
+
+def _sound_url(sound_file: str) -> str:
+    """A hangfájl teljes letöltési URL-je. Ha a szerver nem adott meg URL-t
+    (régi backend, vagy még nem futott le a /bells/sync), visszaesünk a régi,
+    lapos útvonalra – az a migráció előtti fájlokra továbbra is működik."""
+    u = _sound_urls.get(sound_file)
+    if not u:
+        return f"{get_api_base()}/audio/bells/{sound_file}"
+    if u.startswith("http://") or u.startswith("https://"):
+        return u
+    return f"{get_api_base()}{u}"
+
+
 # ── Bell cache ────────────────────────────────────────────────────────────────
 
 def _cache_path(sound_file: str) -> Path:
@@ -38,7 +79,7 @@ def prefetch_bell(sound_file: str) -> None:
         if dest.exists():
             return
         try:
-            url = f"{get_api_base()}/audio/bells/{sound_file}"
+            url = _sound_url(sound_file)
             urllib.request.urlretrieve(url, dest)
             print(f"[Audio] Cached: {sound_file}")
         except Exception as e:
@@ -52,6 +93,56 @@ def prefetch_bells(bells: list) -> None:
         if sf and sf not in seen:
             seen.add(sf)
             prefetch_bell(sf)
+
+# ── Gyári default csengetőhangok ─────────────────────────────────────────────
+#
+# "A CSENGETÉS SOSEM MARADHAT EL": ha a beállított hangfájl nincs meg a helyi
+# cache-ben ÉS nem tölthető le (offline a backend), a lejátszás eddig csendben
+# elmaradt. Az alkalmazás mellé csomagolt default hangok az utolsó védvonal –
+# ugyanazok a fájlok, mint az ESP32 firmware LittleFS képében és a szerver
+# `assets/bells/` könyvtárában.
+DEFAULT_SIGNAL_SOUND = "jelzocsengo.mp3"
+DEFAULT_MAIN_SOUND   = "kibecsengo.mp3"
+def _bundled_dir() -> Path:
+    """A csomagolt hangok könyvtára. PyInstaller `--onefile` alatt a
+    tartalom a `sys._MEIPASS` temp könyvtárba csomagolódik ki (a
+    workflow `--add-data "player/assets:assets"` sorával), fejlesztői
+    futtatáskor viszont a forrás melletti `assets/`-ben van."""
+    base = getattr(sys, "_MEIPASS", None)
+    if base:
+        p = Path(base) / "assets"
+        if p.exists():
+            return p
+    return Path(__file__).resolve().parent / "assets"
+
+
+_BUNDLED_DIR = _bundled_dir()
+
+
+def _bundled_sound(sound_file: str) -> Optional[Path]:
+    """A csomagolt default hang útvonala, vagy None."""
+    for name in (sound_file, DEFAULT_MAIN_SOUND, DEFAULT_SIGNAL_SOUND):
+        p = _BUNDLED_DIR / name
+        if p.exists():
+            return p
+    return None
+
+
+def ensure_default_sounds_cached() -> None:
+    """A csomagolt default hangokat bemásolja a cache-be, ha nincsenek ott.
+    Így egy sosem-online eszköz is tud csengetni."""
+    for name in (DEFAULT_SIGNAL_SOUND, DEFAULT_MAIN_SOUND):
+        dest = _cache_path(name)
+        if dest.exists():
+            continue
+        src = _BUNDLED_DIR / name
+        if not src.exists():
+            continue
+        try:
+            shutil.copyfile(src, dest)
+            print(f"[Audio] Default hang telepítve a cache-be: {name}")
+        except Exception as e:
+            print(f"[Audio] Default hang másolás hiba ({name}): {e}")
 
 # ── Bell lejátszás ────────────────────────────────────────────────────────────
 
@@ -68,13 +159,20 @@ def play_bell(sound_file: str, volume: float = 0.7,
             dest = _cache_path(sound_file)
             if not dest.exists():
                 try:
-                    url = f"{get_api_base()}/audio/bells/{sound_file}"
+                    url = _sound_url(sound_file)
                     urllib.request.urlretrieve(url, dest)
                 except Exception as e:
-                    print(f"[Audio] Bell letöltés sikertelen: {sound_file}: {e}")
-                    if on_done:
-                        on_done()
-                    return
+                    # NEM adjuk fel: a csengetés nem maradhat el. A csomagolt
+                    # default hangra esünk vissza (ugyanaz, mint az ESP32
+                    # firmware-ében), és azzal szólalunk meg.
+                    print(f"[Audio] Bell letöltés sikertelen: {sound_file}: {e} → default hang")
+                    fallback = _bundled_sound(sound_file)
+                    if fallback is None:
+                        print("[Audio] ⛔ Nincs csomagolt default hang sem!")
+                        if on_done:
+                            on_done()
+                        return
+                    dest = fallback
             try:
                 pygame.mixer.music.load(str(dest))
                 pygame.mixer.music.set_volume(_safe_vol(volume))
