@@ -48,6 +48,19 @@ class SnapcastManager:
         snap.start()
     """
 
+    # ── Kapcsolat-állapot markerek ────────────────────────────────────────────
+    # Szó szerint a Windows-kliensből (player/snapcast_manager.py) – ott ez a
+    # felismerés már bevált, és a két kliensnek UGYANAZT kell jelentenie a
+    # csengetés-logika felé (ld. app.py `_backend_reachable`).
+    _CONNECTED_MARKERS    = ("connected", "audio player", "latency", "pcm")
+    _DISCONNECTED_MARKERS = ("disconnected", "connection refused",
+                             "host not found", "failed to resolve",
+                             "operation canceled", "operation cancelled",
+                             "timed out", "time sync request failed")
+    _ERROR_MARKERS        = ("error", "failed", "host not found", "resolve",
+                             "canceled", "cancelled", "timed out")
+
+
     def __init__(self,
                  on_connected:    Optional[Callable]           = None,
                  on_disconnected: Optional[Callable]           = None,
@@ -224,16 +237,39 @@ class SnapcastManager:
                 stderr=subprocess.STDOUT,
                 **kwargs,
             )
-            self._connected = True
-            if self._on_connected:
-                self._on_connected()
+            # A `connected` NEM a folyamat elindulását jelenti!
+            #
+            # Korábban itt `self._connected = True` állt, közvetlenül a
+            # `Popen` után – azaz "elindítottuk a snapclientet" számított
+            # "él a kapcsolat"-nak. Pontosan ez a hiba volt az ESP32-n is
+            # (`snap_app_is_connected()` a task-állapotot adta vissza): a
+            # hálózat megszűnhetett, a kliens mégis online-nak hitte magát,
+            # és a csengetés-logika a backendre várt ahelyett, hogy azonnal
+            # helyben csengetett volna.
+            #
+            # A Windows-kliens már log-marker alapján dönt (ott ez bevált),
+            # ezért itt ugyanazt használjuk.
+            self._connected = False
 
             for line in self._proc.stdout:
                 decoded = line.decode(errors="replace").strip()
-                if decoded:
-                    print(f"[snapclient] {decoded}")
-                    if "disconnected" in decoded.lower() or "error" in decoded.lower():
+                if not decoded:
+                    continue
+                print(f"[snapclient] {decoded}")
+                lower = decoded.lower()
+                is_error_line = any(e in lower for e in self._ERROR_MARKERS)
+
+                if not self._connected:
+                    if (any(m in lower for m in self._CONNECTED_MARKERS)
+                            and not is_error_line):
+                        self._connected = True
+                        print("[Snapcast] ✅ Kapcsolódva")
+                        if self._on_connected:
+                            self._on_connected()
+                else:
+                    if any(m in lower for m in self._DISCONNECTED_MARKERS):
                         self._connected = False
+                        print("[Snapcast] ❌ Kapcsolat bontva")
                         if self._on_disconnected:
                             self._on_disconnected()
 
