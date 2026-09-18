@@ -6,7 +6,7 @@ import platform
 from pathlib import Path
 
 APP_NAME    = "SchoolLive Player"
-APP_VERSION = "1.6.0"
+APP_VERSION = "2.0.0"
 
 # Multi-node cluster: API_BASE/WS_URL korábban egyszeri, import-kori
 # konstansok voltak – minden `from config import API_BASE` hívó a BETÖLTÉSKORI

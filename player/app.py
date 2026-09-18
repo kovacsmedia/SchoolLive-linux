@@ -10,7 +10,7 @@ import api_client    as api
 import audio_manager as audio
 import bell_calendar
 from api_client       import DEVICE_KEY, SHORT_ID, HARDWARE_ID
-from config           import load_settings, save_settings
+from config           import APP_VERSION, load_settings, save_settings
 from snapcast_manager import SnapcastManager
 from sync_client      import SyncClient
 from updater_client   import AutoUpdater
@@ -478,18 +478,23 @@ class SchoolLiveApp:
                 # Multi-node: ha a tenant időközben másik node-ra került, a
                 # snapclientet is át kell irányítani (a WS-oldal már átállt).
                 self._snap.ensure_current_host()
+                # A VERZIÓ EGYETLEN FORRÁSA a config.APP_VERSION.
+                # Itt korábban kézzel írt "1.1.0" állt, miközben a
+                # config.py már 1.6.0-nál tartott – az admin felületen
+                # tehát HAMIS verzió látszott, és a hibabejelentéseket
+                # rossz build-hez társítottuk volna.
                 status_payload = {
                     "snapConnected": bool(self._snap.connected),
                     "wsOnline":      bool(self._online),
                     "hardwareId":    HARDWARE_ID,
                     "shortId":       SHORT_ID,
                     "platform":      "linux",
-                    "appVersion":    "1.1.0",
+                    "appVersion":    APP_VERSION,
                 }
                 self._ws.send_beacon(
                     volume=int(self._volume),
                     muted=bool(self._snap_muted),
-                    firmware_version="1.1.0",
+                    firmware_version=APP_VERSION,
                     status_payload=status_payload,
                 )
             except Exception:
@@ -657,7 +662,7 @@ class SchoolLiveApp:
                           f"({b.get('soundFile')}, ws={self._online} snap={self._snap.connected})")
                     self.ui.show_bell_banner(True)
                     audio.play_bell(
-                        b.get("soundFile", "kibecsengo.mp3"), self._volume / 10,
+                        b.get("soundFile") or audio.DEFAULT_MAIN_SOUND, self._volume / 10,
                         on_done=lambda: self.ui.show_bell_banner(False),
                     )
             except Exception as e:

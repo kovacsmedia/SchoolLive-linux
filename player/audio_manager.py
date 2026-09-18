@@ -101,8 +101,25 @@ def prefetch_bells(bells: list) -> None:
 # elmaradt. Az alkalmazás mellé csomagolt default hangok az utolsó védvonal –
 # ugyanazok a fájlok, mint az ESP32 firmware LittleFS képében és a szerver
 # `assets/bells/` könyvtárában.
-DEFAULT_SIGNAL_SOUND = "jelzocsengo.mp3"
-DEFAULT_MAIN_SOUND   = "kibecsengo.mp3"
+DEFAULT_SIGNAL_SOUND = "assembly-signal-bell.opus"
+DEFAULT_MAIN_SOUND   = "lesson-signal-bell.opus"
+
+
+def _name_variants(name: str) -> tuple:
+    """A kért név, majd az azonos alapnevű társa a másik formátumban.
+
+    Az Opus-ra állás során a szerver már .opus-t küld, a cache-ben viszont
+    még a régi .mp3 lehet (vagy fordítva, ha egy régi kliens listája nem
+    frissült). A kettő szétcsúszása néma csengetés lenne, ezért mindig
+    megnézzük a párját is. A migráció után ártalmatlan: az első találat nyer.
+    """
+    if not name:
+        return ()
+    base, dot, ext = name.rpartition(".")
+    if not dot:
+        return (name,)
+    other = ".mp3" if ext.lower() == "opus" else ".opus"
+    return (name, base + other)
 def _bundled_dir() -> Path:
     """A csomagolt hangok könyvtára. PyInstaller `--onefile` alatt a
     tartalom a `sys._MEIPASS` temp könyvtárba csomagolódik ki (a
@@ -121,10 +138,11 @@ _BUNDLED_DIR = _bundled_dir()
 
 def _bundled_sound(sound_file: str) -> Optional[Path]:
     """A csomagolt default hang útvonala, vagy None."""
-    for name in (sound_file, DEFAULT_MAIN_SOUND, DEFAULT_SIGNAL_SOUND):
-        p = _BUNDLED_DIR / name
-        if p.exists():
-            return p
+    for base in (sound_file, DEFAULT_MAIN_SOUND, DEFAULT_SIGNAL_SOUND):
+        for name in _name_variants(base):
+            p = _BUNDLED_DIR / name
+            if p.exists():
+                return p
     return None
 
 
@@ -135,8 +153,8 @@ def ensure_default_sounds_cached() -> None:
         dest = _cache_path(name)
         if dest.exists():
             continue
-        src = _BUNDLED_DIR / name
-        if not src.exists():
+        src = _bundled_sound(name)
+        if src is None:
             continue
         try:
             shutil.copyfile(src, dest)
@@ -157,6 +175,13 @@ def play_bell(sound_file: str, volume: float = 0.7,
     def _play():
         with _lock:
             dest = _cache_path(sound_file)
+            # Az azonos alapnevű társ is jó, ha a kért alak nincs meg.
+            if not dest.exists():
+                for alt in _name_variants(sound_file)[1:]:
+                    alt_path = _cache_path(alt)
+                    if alt_path.exists():
+                        dest = alt_path
+                        break
             if not dest.exists():
                 try:
                     url = _sound_url(sound_file)
@@ -202,14 +227,18 @@ def play_url(url: str, volume: float = 0.7,
     def _play():
         tmp_path = None
         try:
-            if ".mp3" in url:
+            # A rendszer egységes formátuma Opus, ezért az az alapértelmezés.
+            # A többi csak a régi, még át nem állt tartalmak miatt marad itt.
+            if ".opus" in url:
+                suffix = ".opus"
+            elif ".mp3" in url:
                 suffix = ".mp3"
             elif ".wav" in url:
                 suffix = ".wav"
             elif ".ogg" in url:
                 suffix = ".ogg"
             else:
-                suffix = ".mp3"
+                suffix = ".opus"
 
             fd, tmp_path = tempfile.mkstemp(suffix=suffix)
             os.close(fd)
